@@ -22,7 +22,7 @@ namespace int128_impl {
 
     template<class _Tp>
     struct half_mask {
-        static constexpr int value() { return (_Tp(1) << (4 * sizeof(_Tp))) - _Tp(1); }
+        static constexpr _Tp value() { return (_Tp(1) << (4 * sizeof(_Tp))) - _Tp(1); }
     };
 
     template<class _Tp, class _High, class _Low>
