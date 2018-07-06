@@ -7,22 +7,22 @@
 #include <iostream>
 #include <limits>
 #include <locale>
+#include <string>
 #include <type_traits>
 
 #ifndef __BYTE_ORDER__
 #error __BYTE_ORDER__ not defined
 #endif
 
-namespace int128_impl {
+namespace large_int {
     template<class, class>
     class int128_base;
 
-    typedef int128_base<int64_t, uint64_t> int128;
-    typedef int128_base<uint64_t, uint64_t> uint128;
+    typedef int128_base<int64_t, uint64_t> int128_t;
+    typedef int128_base<uint64_t, uint64_t> uint128_t;
 
     template<class _Tp>
-    struct half_mask {
-        static constexpr _Tp value() { return (_Tp(1) << (4 * sizeof(_Tp))) - _Tp(1); }
+    struct half_mask : std::integral_constant<_Tp, (_Tp(1) << (4 * sizeof(_Tp))) - _Tp(1)> {
     };
 
     template<class, class, class>
@@ -40,6 +40,33 @@ namespace int128_impl {
                              : std::ldexp(_Tp(high_), 64) + _Tp(low_);
         }
     };
+
+    template<bool= true>
+    struct detail_delegate;
+
+    constexpr bool operator<(int128_t, int128_t);
+
+    constexpr bool operator<(uint128_t, uint128_t);
+
+    constexpr uint128_t operator>>(uint128_t, int);
+
+    constexpr int128_t operator>>(int128_t, int);
+
+    constexpr int128_t operator*(int128_t, int128_t);
+
+    constexpr uint128_t operator*(uint128_t, uint128_t);
+
+    constexpr uint128_t operator<<(uint128_t, int);
+
+    constexpr int128_t operator<<(int128_t, int);
+
+    inline uint128_t operator/(uint128_t, uint128_t);
+
+    inline int128_t operator/(int128_t, int128_t);
+
+    inline uint128_t operator%(uint128_t, uint128_t);
+
+    inline int128_t operator%(int128_t, int128_t);
 
     template<class _Hi, class _Low>
     class alignas(sizeof(_Hi) * 2) int128_base final {
@@ -72,13 +99,14 @@ namespace int128_impl {
     private:
         template<class _Tp>
         constexpr int128_base(_Tp value_, signed_integral_tag, size_constant<8>) :
-                int128_base(value_ < 0 ? -1 : 0, value_) {}
+                int128_base(-(value_ < 0), value_) {}
 
         template<class _Tp>
-        constexpr int128_base(_Tp value_, unsigned_integral_tag, size_constant<8>) : int128_base(0, value_) {}
+        constexpr int128_base(_Tp value_, unsigned_integral_tag, size_constant<8>) : int128_base(0, _Low(value_)) {}
 
         template<class _Tp>
-        constexpr int128_base(_Tp value_, integral_tag, size_constant<16>) : int128_base(value_ >> 64U, value_) {}
+        constexpr int128_base(_Tp value_, integral_tag, size_constant<16>) : // NOLINT explicit
+                int128_base(_Hi(value_ >> 64U), _Low(value_)) {} // NOLINT signed shift
 
     public:
 
@@ -105,29 +133,20 @@ namespace int128_impl {
 
         constexpr explicit int128_base(long double value_) : int128_base(value_, float_tag()) {}
 
-        constexpr int128_base(long long value_) : // NOLINT
+        constexpr int128_base(long long value_) : // NOLINT explicit
                 int128_base(value_, signed_integral_tag(), size_constant<sizeof(value_)>()) {}
 
-        constexpr int128_base(long value_) : int128_base(static_cast<long long>(value_)) {} // NOLINT
+        constexpr int128_base(long value_) : int128_base(static_cast<long long>(value_)) {} // NOLINT explicit
 
-        constexpr int128_base(int value_) : int128_base(long(value_)) {} // NOLINT
+        constexpr int128_base(int value_) : int128_base(long(value_)) {} // NOLINT explicit
 
-        constexpr int128_base(unsigned long long value_) : // NOLINT
+        constexpr int128_base(unsigned long long value_) : // NOLINT explicit
                 int128_base(value_, unsigned_integral_tag(), size_constant<sizeof(value_)>()) {}
 
-        constexpr int128_base(unsigned long value_) : int128_base(static_cast<unsigned long long>(value_)) {} // NOLINT
+        constexpr int128_base(unsigned long value_) : // NOLINT explicit
+                int128_base(static_cast<unsigned long long>(value_)) {}
 
-        constexpr int128_base(unsigned value_) : int128_base(static_cast<unsigned long>(value_)) {} // NOLINT
-
-#if __SIZEOF_INT128__ == 16
-
-        constexpr explicit int128_base(__int128 value_) :
-                int128_base(value_, signed_integral_tag(), size_constant<sizeof(value_)>()) {}
-
-        constexpr explicit int128_base(unsigned __int128 value_) :
-                int128_base(value_, unsigned_integral_tag(), size_constant<sizeof(value_)>()) {}
-
-#endif
+        constexpr int128_base(unsigned value_) : int128_base(static_cast<unsigned long>(value_)) {} // NOLINT explicit
 
         constexpr explicit operator bool() const { return high_ || low_; }
 
@@ -161,6 +180,12 @@ namespace int128_impl {
 
 #if __SIZEOF_INT128__ == 16
 
+        constexpr explicit int128_base(__int128 value_) :
+                int128_base(value_, signed_integral_tag(), size_constant<sizeof(value_)>()) {}
+
+        constexpr explicit int128_base(unsigned __int128 value_) :
+                int128_base(value_, unsigned_integral_tag(), size_constant<sizeof(value_)>()) {}
+
         constexpr explicit operator unsigned __int128() const {
             return static_cast<unsigned __int128>(high_) << 64U | static_cast<unsigned __int128>(low_);
         }
@@ -191,23 +216,17 @@ namespace int128_impl {
         constexpr bool operator!() const { return !high_ && !low_; }
 
         // avoid self plus on rvalue
-        int128_base &operator++() &{
-            if (!++low_) ++high_;
-            return *this;
-        }
+        int128_base &operator++() &{ return *this = *this + int128_base(1); }
 
-        int128_base &operator--() &{
-            if (!low_--) --high_;
-            return *this;
-        }
+        int128_base &operator--() &{ return *this = *this - int128_base(1); }
 
-        int128_base operator++(int) &{ // NOLINT
+        int128_base operator++(int) &{ // NOLINT returns non constant
             int128_base tmp = *this;
             ++*this;
             return tmp;
         }
 
-        int128_base operator--(int) &{ // NOLINT
+        int128_base operator--(int) &{ // NOLINT returns non constant
             int128_base tmp = *this;
             --*this;
             return tmp;
@@ -220,18 +239,6 @@ namespace int128_impl {
 
         friend constexpr int128_base operator-(int128_base a, int128_base b) {
             return {_Hi(a.high_ - b.high_ - (a.low_ < b.low_)), a.low_ - b.low_};
-        }
-
-        friend constexpr int128_base operator*(int128_base a, int128_base b) {
-#if __SIZEOF_INT128__ == 16
-            return int128_base(static_cast<__int128>(a) * static_cast<__int128>(b));
-#else
-            return int128_base(_Hi(a.low_ * b.high_ + b.low_ * a.high_) + (a.low_ >> 32U) * (b.low_ >> 32U),
-                               (a.low_ & half_mask<_Low>::value()) *
-                               (b.low_ & half_mask<_Low>::value()))
-                   + (int128_base((a.low_ >> 32U) * (b.low_ & half_mask<_Low>::value())) << 32U)
-                   + (int128_base((b.low_ >> 32U) * (a.low_ & half_mask<_Low>::value())) << 32U);
-#endif
         }
 
         friend constexpr int128_base operator&(int128_base a, int128_base b) {
@@ -258,17 +265,6 @@ namespace int128_impl {
 
         friend constexpr bool operator!=(int128_base a, int128_base b) { return !(a == b); }
 
-        friend constexpr int128_base operator<<(int128_base x, int n) {
-#if __SIZEOF_INT128__ == 16
-            return int128_base(static_cast<unsigned __int128>(x) << static_cast<unsigned __int128>(n));
-#else
-            // [64,127], 64 {low_ << 0, 0}
-            return n & 64U ? int128_base(_Hi(x.low_ << (n & 63U)), _Low(0)) :
-                   n & 63U ? int128_base(_Hi((_Low(x.high_) << (n & 63U)) | (x.low_ >> (64U - (n & 63U)))),
-                                         x.low_ << (n & 63U)) : x;
-#endif
-        }
-
         friend constexpr int128_base operator<<(int128_base x, int128_base y) { return x << (int) y.low_; }
 
         friend constexpr int128_base operator>>(int128_base x, int128_base y) { return x >> (int) y.low_; }
@@ -284,14 +280,6 @@ namespace int128_impl {
         int128_base &operator%=(int128_base another) &{ return *this = *this % another; }
 
         int128_base &operator<<=(int128_base x) &{ return *this = *this << x; }
-
-        friend constexpr uint128 operator>>(uint128, int);
-
-        friend constexpr int128 operator>>(int128, int);
-
-        friend constexpr bool operator<(uint128, uint128);
-
-        friend constexpr bool operator<(int128, int128);
 
         int128_base &operator>>=(int128_base x) &{ return *this = *this >> x; }
 
@@ -312,114 +300,77 @@ namespace int128_impl {
         template<class>
         friend
         class clz_helper;
+
+        template<bool>
+        friend
+        class detail_delegate;
     };
 
-    constexpr bool operator<(int128 a, int128 b) {
-#if __SIZEOF_INT128__ == 16
-        return static_cast<__int128>(a) < static_cast<__int128>(b);
-#else
-        return a.high_ < b.high_ || (a.high_ == b.high_ && a.low_ < b.low_);
-#endif
+    inline namespace literals {
+        namespace impl_ {
+            template<char _Ch, int _Rad>
+            struct static_digit : std::integral_constant<int,
+                    '0' <= _Ch && _Ch <= '9' ? _Ch - '0' :
+                    'a' <= _Ch && _Ch <= 'z' ? _Ch - 'a' + 10 :
+                    'A' <= _Ch && _Ch <= 'Z' ? _Ch - 'A' + 10 : _Rad> {
+                static_assert(_Rad > static_digit::value, "character not a digit");
+            };
+
+            template<class, int, char ...>
+            struct int128_literal_radix;
+
+            template<class _Tp, int _Rad, char _Ch>
+            struct int128_literal_radix<_Tp, _Rad, _Ch> {
+                constexpr operator _Tp() const { return _Tp(static_digit<_Ch, _Rad>::value); } // NOLINT explicit
+
+                constexpr _Tp operator()(_Tp v) const { return v * _Tp(_Rad) + *this; }
+            };
+
+            template<class _Tp, int _Rad, char _Ch, char ..._Args>
+            struct int128_literal_radix<_Tp, _Rad, _Ch, _Args...> {
+                int128_literal_radix<_Tp, _Rad, _Ch> _Cur;
+                int128_literal_radix<_Tp, _Rad, _Args...> _Tgt;
+
+                constexpr operator _Tp() const { return _Tgt(_Cur); }; // NOLINT explicit
+
+                constexpr _Tp operator()(_Tp v) const { return _Tgt(_Cur(v)); };
+            };
+
+            template<class _Tp, char ..._Args>
+            struct int128_literal : int128_literal_radix<_Tp, 10, _Args...> {
+            };
+            template<class _Tp>
+            struct int128_literal<_Tp, '0'> : int128_literal_radix<_Tp, 10, '0'> {
+            };
+            template<class _Tp, char ..._Args>
+            struct int128_literal<_Tp, '0', _Args...> : int128_literal_radix<_Tp, 8, _Args...> {
+            };
+            template<class _Tp, char ..._Args>
+            struct int128_literal<_Tp, '0', 'x', _Args...> : int128_literal_radix<_Tp, 16, _Args...> {
+            };
+            template<class _Tp, char ..._Args>
+            struct int128_literal<_Tp, '0', 'X', _Args...> : int128_literal_radix<_Tp, 16, _Args...> {
+            };
+            template<class _Tp, char ..._Args>
+            struct int128_literal<_Tp, '0', 'b', _Args...> : int128_literal_radix<_Tp, 2, _Args...> {
+            };
+            template<class _Tp, char ..._Args>
+            struct int128_literal<_Tp, '0', 'B', _Args...> : int128_literal_radix<_Tp, 2, _Args...> {
+            };
+        }
+
+        template<char ..._Args>
+        constexpr uint128_t operator "" _u128() { return impl_::int128_literal<uint128_t, _Args...>(); }
+
+        template<char ..._Args>
+        constexpr int128_t operator "" _l128() { return impl_::int128_literal<int128_t, _Args...>(); }
+
+        template<char ..._Args>
+        constexpr uint128_t operator "" _U128() { return impl_::int128_literal<uint128_t, _Args...>(); }
+
+        template<char ..._Args>
+        constexpr int128_t operator "" _L128() { return impl_::int128_literal<int128_t, _Args...>(); }
     }
-
-    constexpr bool operator<(uint128 a, uint128 b) {
-#if __SIZEOF_INT128__ == 16
-        return static_cast<unsigned __int128>(a) < static_cast<unsigned __int128>(b);
-#else
-        return a.high_ < b.high_ || (a.high_ == b.high_ && a.low_ < b.low_);
-#endif
-    }
-
-    template<char _Ch, int _Rad>
-    struct static_digit : std::integral_constant<int,
-            '0' <= _Ch && _Ch <= '9' ? _Ch - '0' :
-            'a' <= _Ch && _Ch <= 'z' ? _Ch - 'a' + 10 :
-            'A' <= _Ch && _Ch <= 'Z' ? _Ch - 'A' + 10 : _Rad> {
-        static_assert(_Rad > static_digit::value, "character not a digit");
-    };
-
-    template<int>
-    struct shift_multiply;
-
-    template<>
-    struct shift_multiply<2> {
-        template<class _Tp>
-        constexpr _Tp operator()(_Tp value) const { return value << 1; }
-    };
-
-    template<>
-    struct shift_multiply<8> {
-        template<class _Tp>
-        constexpr _Tp operator()(_Tp value) const { return value << 3; }
-    };
-
-    template<>
-    struct shift_multiply<10> {
-        template<class _Tp>
-        constexpr _Tp operator()(_Tp value) const { return (value << 3) + (value << 1); }
-    };
-
-    template<>
-    struct shift_multiply<16> {
-        template<class _Tp>
-        constexpr _Tp operator()(_Tp value) const { return value << 4; }
-    };
-
-    template<class, int, char ...>
-    struct int128_literal_radix;
-
-    template<class _Tp, int _Rad, char _Ch>
-    struct int128_literal_radix<_Tp, _Rad, _Ch> {
-        shift_multiply<_Rad> _Mul;
-
-        constexpr operator _Tp() const { return _Tp(static_digit<_Ch, _Rad>::value); } // NOLINT
-
-        constexpr _Tp operator()(_Tp v) const { return _Mul(v) + *this; }
-    };
-
-    template<class _Tp, int _Rad, char _Ch, char ..._Args>
-    struct int128_literal_radix<_Tp, _Rad, _Ch, _Args...> {
-        int128_literal_radix<_Tp, _Rad, _Ch> _Cur;
-        int128_literal_radix<_Tp, _Rad, _Args...> _Tgt;
-
-        constexpr operator _Tp() const { return _Tgt(_Cur); }; // NOLINT
-
-        constexpr _Tp operator()(_Tp v) const { return _Tgt(_Cur(v)); };
-    };
-
-    template<class _Tp, char ..._Args>
-    struct int128_literal : int128_literal_radix<_Tp, 10, _Args...> {
-    };
-    template<class _Tp>
-    struct int128_literal<_Tp, '0'> : int128_literal_radix<_Tp, 10, '0'> {
-    };
-    template<class _Tp, char ..._Args>
-    struct int128_literal<_Tp, '0', _Args...> : int128_literal_radix<_Tp, 8, _Args...> {
-    };
-    template<class _Tp, char ..._Args>
-    struct int128_literal<_Tp, '0', 'x', _Args...> : int128_literal_radix<_Tp, 16, _Args...> {
-    };
-    template<class _Tp, char ..._Args>
-    struct int128_literal<_Tp, '0', 'X', _Args...> : int128_literal_radix<_Tp, 16, _Args...> {
-    };
-    template<class _Tp, char ..._Args>
-    struct int128_literal<_Tp, '0', 'b', _Args...> : int128_literal_radix<_Tp, 2, _Args...> {
-    };
-    template<class _Tp, char ..._Args>
-    struct int128_literal<_Tp, '0', 'B', _Args...> : int128_literal_radix<_Tp, 2, _Args...> {
-    };
-
-    template<char ..._Args>
-    inline constexpr uint128 operator "" _u128() { return int128_literal<uint128, _Args...>(); }
-
-    template<char ..._Args>
-    inline constexpr int128 operator "" _l128() { return int128_literal<int128, _Args...>(); }
-
-    template<char ..._Args>
-    inline constexpr uint128 operator "" _U128() { return int128_literal<uint128, _Args...>(); }
-
-    template<char ..._Args>
-    inline constexpr int128 operator "" _L128() { return int128_literal<int128, _Args...>(); }
 
     template<class>
     class clz_helper;
@@ -441,90 +392,181 @@ namespace int128_impl {
         }
     };
 
-    constexpr uint128 operator>>(uint128 x, int n) {
-#if __SIZEOF_INT128__ == 16
-        return uint128(static_cast<unsigned __int128>(x) >> static_cast<unsigned __int128>(n));
-#else
-        return n & 64U ? uint128(0, x.high_ >> (n & 63U)) :
-               n & 63U ? uint128(x.high_ >> (n & 63U),
-                                 (x.high_ << (64 - (n & 63U)) | (x.low_ >> (n & 63U)))) : x;
-#endif
-    }
-
-    constexpr int128 operator>>(int128 x, int n) {
-#if __SIZEOF_INT128__ == 16
-        return int128(static_cast<__int128>(x) >> static_cast<__int128>(n));
-#else
-        return n & 64U ? int128(x.high_ < 0 ? -1 : 0, uint64_t(x.high_ >> (n & 63U))) :
-               n & 63U ? int128(x.high_ >> (n & 63U),
-                                (uint64_t(x.high_) << (64 - (n & 63U)) | (x.low_ >> (n & 63U)))) : x;
-#endif
-    }
-
-    inline uint128 &div_mod_impl(uint128 &dividend, uint128 divisor, uint128 &quot) {
-#if __SIZEOF_INT128__ == 16
-        quot = uint128(static_cast<unsigned __int128>(dividend) / static_cast<unsigned __int128>(divisor));
-        return dividend = uint128(static_cast<unsigned __int128>(dividend) % static_cast<unsigned __int128>(divisor));
-#else
-        // assert(divisor != uint128(0));
-        if (!dividend) return dividend;
-        auto zend = clz_helper<uint128>::clz(dividend), zsor = clz_helper<uint128>::clz(divisor);
-        if (zend > zsor) return dividend;
-        for (zsor -= zend, divisor <<= zsor;; divisor >>= 1, quot <<= 1) {
-            if (dividend >= divisor) {
-                dividend -= divisor;
-                quot |= 1;
-            }
-            if (!zsor--) return dividend;
+    template<bool>
+    struct detail_delegate {
+        template<class _Hi, class _Low>
+        static constexpr bool cmp(int128_base<_Hi, _Low> a, int128_base<_Hi, _Low> b) {
+            return a.high_ < b.high_ || (a.high_ == b.high_ && a.low_ < b.low_);
         }
-#endif
-    }
 
-    inline uint128 operator/(uint128 n, uint128 d) {
-#if __SIZEOF_INT128__ == 16
-        return uint128(static_cast<unsigned __int128>(n) / static_cast<unsigned __int128>(d));
-#else
-        if (!d) return !!n / !!d; // raise signal SIGFPE
-        uint128 quot = 0;
-        div_mod_impl(n, d, quot);
-        return quot;
-#endif
+        static constexpr uint128_t shr(uint128_t x, unsigned n) {
+            return n & 64U ? uint128_t(0, x.high_ >> (n & 63U)) :
+                   n & 63U ? uint128_t(x.high_ >> (n & 63U),
+                                       (x.high_ << (64 - (n & 63U)) | (x.low_ >> (n & 63U)))) : x;
+        }
+
+        static constexpr int128_t sar(int128_t x, unsigned n) {
+            return n & 64U ? int128_t(-(x.high_ < 0), uint64_t(x.high_ >> (n & 63U))) : // NOLINT signed shift
+                   n & 63U ? int128_t(x.high_ >> (n & 63U), // NOLINT signed shift
+                                      (uint64_t(x.high_) << (64 - (n & 63U)) | (x.low_ >> (n & 63U)))) : x;
+        }
+
+        template<class _Hi, class _Low>
+        static constexpr int128_base<_Hi, _Low> imul(int128_base<_Hi, _Low> a, int128_base<_Hi, _Low> b) {
+            return int128_base<_Hi, _Low>(_Hi(a.low_ * b.high_ + b.low_ * a.high_) + (a.low_ >> 32U) * (b.low_ >> 32U),
+                                          (a.low_ & half_mask<_Low>::value) *
+                                          (b.low_ & half_mask<_Low>::value))
+                   + (int128_base<_Hi, _Low>((a.low_ >> 32U) * (b.low_ & half_mask<_Low>::value)) << 32U)
+                   + (int128_base<_Hi, _Low>((b.low_ >> 32U) * (a.low_ & half_mask<_Low>::value)) << 32U);
+        }
+
+        template<class _Hi, class _Low>
+        static constexpr int128_base<_Hi, _Low> shl(int128_base<_Hi, _Low> x, unsigned n) {
+            // [64,127], 64 {low_ << 0, 0}
+            return n & 64U ? int128_base<_Hi, _Low>(_Hi(x.low_ << (n & 63U)), _Low(0)) :
+                   n & 63U ? int128_base<_Hi, _Low>(_Hi((_Low(x.high_) << (n & 63U)) | (x.low_ >> (64U - (n & 63U)))),
+                                                    x.low_ << (n & 63U)) : x;
+        }
+
+        static uint128_t &slow_div_(uint128_t &dividend_, uint128_t divisor_, uint128_t &quot_) {
+            // assert(divisor != uint128_t(0));
+            quot_ = uint128_t(0);
+            if (cmp(dividend_, divisor_)) return dividend_;
+            if (dividend_.high_ == 0) { // (0,x) / ???
+                quot_.low_ = dividend_.low_ / divisor_.low_;
+                dividend_.low_ %= divisor_.low_;
+                return dividend_;
+            }
+            auto zend_ = clz_helper<uint128_t>::clz(dividend_), zsor_ = clz_helper<uint128_t>::clz(divisor_);
+            if (zend_ > zsor_) return dividend_;
+            for (zsor_ -= zend_, divisor_ <<= zsor_;; divisor_ >>= 1, quot_ <<= 1) {
+                if (dividend_ >= divisor_) {
+                    dividend_ -= divisor_;
+                    quot_ |= uint128_t(1);
+                }
+                if (!zsor_--) return dividend_;
+            }
+        }
+
+        static uint128_t div(uint128_t dividend_, uint128_t divisor_) {
+            if (!divisor_) return {!!dividend_ / !!divisor_}; // raise signal SIGFPE
+            uint128_t quot_(0);
+            slow_div_(dividend_, divisor_, quot_);
+            return quot_;
+        }
+
+        static int128_t div(int128_t dividend_, int128_t divisor_) {
+            bool nneg_ = dividend_.high_ < 0, dneg_ = divisor_.high_ < 0;
+            auto res_ = div(uint128_t(nneg_ ? -dividend_ : dividend_), uint128_t(dneg_ ? -divisor_ : divisor_));
+            return int128_t(nneg_ ^ dneg_ ? -res_ : res_);
+        }
+
+        static uint128_t mod(uint128_t dividend_, uint128_t divisor_) {
+            if (!divisor_) return {!!dividend_ % !!divisor_}; // raise signal SIGFPE
+            uint128_t quot_(0);
+            return slow_div_(dividend_, divisor_, quot_);
+        }
+
+        static int128_t mod(int128_t dividend_, int128_t divisor_) {
+            bool neg_ = dividend_.high_ < 0;
+            auto res_ = mod(uint128_t(neg_ ? -dividend_ : dividend_),
+                            uint128_t(divisor_.high_ < 0 ? -divisor_ : divisor_));
+            return int128_t(neg_ ? -res_ : res_);
+        }
+
+        static void part_div(uint128_t value_, uint64_t div_, uint64_t &high_, uint64_t &mid_, uint64_t &low_) {
+            uint128_t hh_(0), md_(0);
+            low_ = static_cast<uint64_t>(slow_div_(value_, div_, md_));
+            mid_ = static_cast<uint64_t>(slow_div_(md_, div_, hh_));
+            high_ = static_cast<uint64_t>(hh_);
+        }
     };
 
-    inline uint128 operator%(uint128 n, uint128 d) {
 #if __SIZEOF_INT128__ == 16
-        return uint128(static_cast<unsigned __int128>(n) % static_cast<unsigned __int128>(d));
-#else
-        if (!d) return !!n % !!d; // raise signal SIGFPE
-        uint128 quot = 0;
-        return div_mod_impl(n, d, quot);
-#endif
+
+    template<>
+    struct detail_delegate<true> {
+        typedef __int128 ti_int_;
+        typedef unsigned __int128 tu_int_;
+
+        static constexpr ti_int_ to_native(int128_t x) { return static_cast<ti_int_>(x); }
+
+        static constexpr tu_int_ to_native(uint128_t x) { return static_cast<tu_int_>(x); }
+
+        static constexpr int128_t from_native(ti_int_ x) { return int128_t(x); }
+
+        static constexpr uint128_t from_native(tu_int_ x) { return uint128_t(x); }
+
+        template<class _Hi, class _Low>
+        static constexpr bool cmp(int128_base<_Hi, _Low> a, int128_base<_Hi, _Low> b) {
+            return to_native(a) < to_native(b);
+        }
+
+        static constexpr uint128_t shr(uint128_t x, unsigned n) {
+            return from_native(to_native(x) >> static_cast<decltype(to_native(x))>(n));
+        }
+
+        static constexpr int128_t sar(int128_t x, unsigned n) {
+            return from_native(to_native(x) >> static_cast<decltype(to_native(x))>(n)); // NOLINT signed shift
+        }
+
+        template<class _Hi, class _Low>
+        static constexpr int128_base<_Hi, _Low> imul(int128_base<_Hi, _Low> a, int128_base<_Hi, _Low> b) {
+            return from_native(to_native(a) * to_native(b));
+        }
+
+        template<class _Hi, class _Low>
+        static constexpr int128_base<_Hi, _Low> shl(int128_base<_Hi, _Low> x, unsigned n) {
+            return from_native(to_native(x) << static_cast<decltype(to_native(x))>(n)); // NOLINT signed shift
+        }
+
+        template<class _Hi, class _Low>
+        static constexpr int128_base<_Hi, _Low>
+        div(int128_base<_Hi, _Low> n, int128_base<_Hi, _Low> d) { return from_native(to_native(n) / to_native(d)); }
+
+        template<class _Hi, class _Low>
+        static constexpr int128_base<_Hi, _Low>
+        mod(int128_base<_Hi, _Low> n, int128_base<_Hi, _Low> d) { return from_native(to_native(n) % to_native(d)); }
+
+        static void part_div(uint128_t value_, uint64_t div_, uint64_t &high_, uint64_t &mid_, uint64_t &low_) {
+            // on some cpu, compiler won't do optmize for us
+            auto vv_ = to_native(value_);
+            auto rest_ = vv_ / div_;
+            low_ = static_cast<uint64_t>(vv_) - div_ * static_cast<uint64_t>(rest_);
+            high_ = static_cast<uint64_t>(rest_ / div_);
+            mid_ = static_cast<uint64_t>(rest_) - div_ * high_;
+        }
     };
 
-    inline int128 operator%(int128 n, int128 d) {
-#if __SIZEOF_INT128__ == 16
-        return int128(static_cast<__int128>(n) % static_cast<__int128>(d));
-#else
-        bool negative = n < int128(0);
-        auto tmp = uint128(negative ? -n : n) % uint128(d < int128(0) ? -d : d);
-        return int128(negative ? -tmp : tmp);
 #endif
-    }
 
-    inline int128 operator/(int128 n, int128 d) {
-#if __SIZEOF_INT128__ == 16
-        return int128(static_cast<__int128>(n) / static_cast<__int128>(d));
-#else
-        bool nnegative = n < int128(0), dnegative = d < int128(0);
-        bool rnegative = nnegative != dnegative;
-        auto result = uint128(nnegative ? -n : n) / uint128(dnegative ? -d : d);
-        return int128(rnegative ? -result : result);
-#endif
-    };
+    constexpr bool operator<(int128_t a, int128_t b) { return detail_delegate<>::cmp(a, b); }
+
+    constexpr bool operator<(uint128_t a, uint128_t b) { return detail_delegate<>::cmp(a, b); }
+
+    constexpr uint128_t operator>>(uint128_t x, int n) { return detail_delegate<>::shr(x, static_cast<unsigned>(n)); }
+
+    constexpr int128_t operator>>(int128_t x, int n) { return detail_delegate<>::sar(x, static_cast<unsigned>(n)); }
+
+    constexpr int128_t operator*(int128_t a, int128_t b) { return detail_delegate<>::imul(a, b); }
+
+    constexpr uint128_t operator*(uint128_t a, uint128_t b) { return detail_delegate<>::imul(a, b); }
+
+    constexpr uint128_t operator<<(uint128_t x, int n) { return detail_delegate<>::shl(x, static_cast<unsigned>(n)); }
+
+    constexpr int128_t operator<<(int128_t x, int n) { return detail_delegate<>::shl(x, static_cast<unsigned>(n)); }
+
+    inline uint128_t operator/(uint128_t n, uint128_t d) { return detail_delegate<>::div(n, d); };
+
+    inline int128_t operator/(int128_t n, int128_t d) { return detail_delegate<>::div(n, d); };
+
+    inline uint128_t operator%(uint128_t n, uint128_t d) { return detail_delegate<>::mod(n, d); };
+
+    inline int128_t operator%(int128_t n, int128_t d) { return detail_delegate<>::mod(n, d); }
 
     template<class _CharT, class _Traits>
     inline std::basic_ostream<_CharT, _Traits> &
-    print_value(std::basic_ostream<_CharT, _Traits> &out_, bool signed_integral_, uint128 value_) {
+    print_value(std::basic_ostream<_CharT, _Traits> &out_, bool signed_integral_, uint128_t value_) {
         constexpr std::size_t buf_size_ = 45;
 
         typename std::basic_ostream<_CharT, _Traits>::sentry sentry_(out_);
@@ -561,8 +603,8 @@ namespace int128_impl {
                 auto y_ = (uint64_t) (value_ >> 63U) & mask_;
                 auto z_ = (uint64_t) (value_) & mask_;
                 if (x_) {
-                    offset_ += snprintf(buf_ + offset_, buf_size_ - offset_, "%" PRIo64 "%021" PRIo64 "%021" PRIo64, x_,
-                                        y_, z_);
+                    offset_ += snprintf(buf_ + offset_, buf_size_ - offset_, "%" PRIo64 "%021" PRIo64 "%021" PRIo64,
+                                        x_, y_, z_);
                 } else if (y_) {
                     offset_ += snprintf(buf_ + offset_, buf_size_ - offset_, "%" PRIo64 "%021" PRIo64, y_, z_);
                 } else {
@@ -579,18 +621,16 @@ namespace int128_impl {
                         prefix_ = "+";
                     }
                 }
-                constexpr uint128 div_(UINT64_C(10000000000000000000));
-                uint128 mid_ = 0, high_ = 0;
-                div_mod_impl(value_, div_, mid_);
-                div_mod_impl(mid_, div_, high_);
+                uint64_t high_, mid_, low_;
+                detail_delegate<>::part_div(value_, UINT64_C(10000000000000000000), high_, mid_, low_);
                 if (high_) {
                     offset_ = snprintf(buf_, buf_size_, "%" PRIu64 "%019" PRIu64 "%019" PRIu64,
-                                       (uint64_t) high_, (uint64_t) mid_, (uint64_t) value_);
+                                       high_, mid_, low_);
                 } else if (mid_) {
                     offset_ = snprintf(buf_, buf_size_, "%" PRIu64 "%019" PRIu64,
-                                       (uint64_t) mid_, (uint64_t) value_);
+                                       mid_, low_);
                 } else {
-                    offset_ = snprintf(buf_, buf_size_, "%" PRIu64, (uint64_t) value_);
+                    offset_ = snprintf(buf_, buf_size_, "%" PRIu64, low_);
                 }
                 break;
             }
@@ -606,22 +646,23 @@ namespace int128_impl {
         auto &npt_ = std::use_facet<std::numpunct<_CharT> >(loc_);
         std::string grouping_ = npt_.grouping();
 
-        if (grouping_.empty()) {
+        // no worry group is not empty
+        auto limit_ = grouping_.size();
+        if (limit_ == 0) {
             op_ = oe_ - offset_;
             ct_.widen(buf_, buf_ + offset_, op_);
         } else {
-            op_ = oe_;
             auto thousands_sep_ = npt_.thousands_sep();
-            // no worry group is not empty
-            auto sz_ = grouping_.size() - 1;
-            decltype(sz_) dg_ = 0;
+            decltype(limit_) dg_ = 0;
             auto cnt_ = static_cast<unsigned char>(grouping_[dg_]);
             unsigned char dc_ = 0;
+            --limit_;
+            op_ = oe_;
             for (char *p_ = buf_ + offset_; p_ != buf_; ++dc_) {
                 if (cnt_ > 0 && dc_ == cnt_) {
                     *--op_ = thousands_sep_;
                     dc_ = 0;
-                    if (dg_ < sz_) cnt_ = static_cast<unsigned char>(grouping_[++dg_]);
+                    if (dg_ < limit_) cnt_ = static_cast<unsigned char>(grouping_[++dg_]);
                 }
                 *--op_ = ct_.widen(*--p_);
             }
@@ -656,13 +697,13 @@ namespace int128_impl {
     }
 
     template<class _CharT, class _Traits>
-    inline std::basic_ostream<_CharT, _Traits> &operator<<(std::basic_ostream<_CharT, _Traits> &out, uint128 _Val) {
+    inline std::basic_ostream<_CharT, _Traits> &operator<<(std::basic_ostream<_CharT, _Traits> &out, uint128_t _Val) {
         return print_value(out, false, _Val);
     }
 
     template<class _CharT, class _Traits>
-    inline std::basic_ostream<_CharT, _Traits> &operator<<(std::basic_ostream<_CharT, _Traits> &out, int128 _Val) {
-        return print_value(out, true, uint128(_Val));
+    inline std::basic_ostream<_CharT, _Traits> &operator<<(std::basic_ostream<_CharT, _Traits> &out, int128_t _Val) {
+        return print_value(out, true, uint128_t(_Val));
     }
 }
 
@@ -670,23 +711,70 @@ namespace int128_impl {
 namespace std {
 #pragma push_macro("MAKE_TYPE")
 #define MAKE_TYPE(outter, inner, parent) \
-template<> struct outter<int128_impl::inner> : std::parent {}; \
-template<> struct outter<const int128_impl::inner> : std::parent {}; \
-template<> struct outter<volatile int128_impl::inner> : std::parent {}; \
-template<> struct outter<const volatile int128_impl::inner> : std::parent {};
-    MAKE_TYPE(is_integral, uint128, true_type)
-    MAKE_TYPE(is_integral, int128, true_type)
-    MAKE_TYPE(is_signed, uint128, false_type)
-    MAKE_TYPE(is_signed, int128, true_type)
+template<> struct outter<large_int::inner> : std::parent {}; \
+template<> struct outter<const large_int::inner> : std::parent {}; \
+template<> struct outter<volatile large_int::inner> : std::parent {}; \
+template<> struct outter<const volatile large_int::inner> : std::parent {};
+    MAKE_TYPE(is_integral, uint128_t, true_type)
+    MAKE_TYPE(is_integral, int128_t, true_type)
+    MAKE_TYPE(is_signed, uint128_t, false_type)
+    MAKE_TYPE(is_signed, int128_t, true_type)
 #undef MAKE_TYPE
 #define MAKE_TYPE(outter, inner, target) \
-template<> struct outter<int128_impl::inner> { typedef int128_impl::target type; }; \
-template<> struct outter<const int128_impl::inner> { typedef const int128_impl::target type; }; \
-template<> struct outter<volatile int128_impl::inner> { typedef volatile int128_impl::target type; }; \
-template<> struct outter<const volatile int128_impl::inner> { typedef const volatile int128_impl::target type; };
-    MAKE_TYPE(make_signed, uint128, int128)
-    MAKE_TYPE(make_unsigned, int128, uint128)
+template<> struct outter<large_int::inner> { typedef large_int::target type; }; \
+template<> struct outter<const large_int::inner> { typedef const large_int::target type; }; \
+template<> struct outter<volatile large_int::inner> { typedef volatile large_int::target type; }; \
+template<> struct outter<const volatile large_int::inner> { typedef const volatile large_int::target type; };
+    MAKE_TYPE(make_signed, uint128_t, int128_t)
+    MAKE_TYPE(make_unsigned, int128_t, uint128_t)
 #pragma pop_macro("MAKE_TYPE")
+    template<class _Hi, class _Low>
+    struct numeric_limits<large_int::int128_base<_Hi, _Low> > {
+    private:
+        typedef large_int::int128_base<_Hi, _Low>_Tp;
+    public:
+        static constexpr const bool is_specialized = true;
+        static constexpr const bool is_signed = numeric_limits<_Hi>::is_signed;
+        static constexpr const bool is_integer = true;
+        static constexpr const bool is_exact = true;
+        static constexpr const bool has_infinity = false;
+        static constexpr const bool has_quiet_NaN = false;
+        static constexpr const bool has_signaling_NaN = false;
+        static constexpr const std::float_denorm_style has_denorm = std::denorm_absent;
+        static constexpr const bool has_denorm_loss = false;
+        static constexpr const std::float_round_style round_style = std::round_toward_zero;
+        static constexpr const bool is_iec559 = false;
+        static constexpr const bool is_bounded = true;
+        static constexpr const bool is_modulo = numeric_limits<_Hi>::is_modulo;
+        static constexpr const int digits = static_cast<int>(sizeof(_Tp) * 8 - is_signed);
+        static constexpr const int digits10 = digits * 3 / 10;
+        static constexpr const int max_digits10 = 0;
+        static constexpr const int radix = 2;
+        static constexpr const int min_exponent = 0;
+        static constexpr const int min_exponent10 = 0;
+        static constexpr const int max_exponent = 0;
+        static constexpr const int max_exponent10 = 0;
+        static constexpr const bool traps = numeric_limits<_Hi>::traps;
+        static constexpr const bool tinyness_before = false;
+
+        static constexpr _Tp min() { return is_signed ? _Tp(1) << digits : _Tp(0); }
+
+        static constexpr _Tp lowest() { return min(); }
+
+        static constexpr _Tp max() { return ~min(); }
+
+        static constexpr _Tp epsilon() { return _Tp(0); }
+
+        static constexpr _Tp round_error() { return _Tp(0); }
+
+        static constexpr _Tp infinity() { return _Tp(0); }
+
+        static constexpr _Tp quiet_NaN() { return _Tp(0); }
+
+        static constexpr _Tp signaling_NaN() { return _Tp(0); }
+
+        static constexpr _Tp denorm_min() { return _Tp(0); }
+    };
 }
 #endif /* INT128_SPECIALIZATION */
 
@@ -694,10 +782,7 @@ template<> struct outter<const volatile int128_impl::inner> { typedef const vola
 #define INT128_C(val) val##_L128
 #define UINT128_C(val) val##_U128
 // add space between ‘""’ and suffix identifier, or may compile failed
-using int128_impl::operator "" _L128;
-using int128_impl::operator "" _l128;
-using int128_impl::operator "" _U128;
-using int128_impl::operator "" _u128;
-using int128_impl::uint128;
-using int128_impl::int128;
+using namespace large_int::literals;
+using large_int::uint128_t;
+using large_int::int128_t;
 #endif /* INT128_NO_EXPORT */
